@@ -1,0 +1,91 @@
+function pushProductionActualsToProductInventory() {
+  const PRODUCT_INVENTORY_SPREADSHEET_ID = ''; // Put Sheet ID Here
+
+  // Sheet names
+  const SOURCE_OVERVIEW_SHEET_NAME = 'Overview';
+  const SOURCE_PROD_ACTUALS_SHEET_NAME = 'Production Actuals';
+  const TARGET_PROD_ACTUALS_SHEET_NAME = 'Production Actuals (Batch Log)';
+
+  // Shelf life – fixed at 2 years
+  const SHELF_LIFE_YEARS = 2;
+
+  const sourceSs = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Get Batch ID from Overview!B3
+  const overviewSheet = sourceSs.getSheetByName(SOURCE_OVERVIEW_SHEET_NAME);
+  const batchId = overviewSheet.getRange('B3').getValue();
+  if (!batchId) throw new Error('Batch ID (Overview!B3) is empty.');
+
+  // Get Production Actuals
+  const sourceProdSheet = sourceSs.getSheetByName(SOURCE_PROD_ACTUALS_SHEET_NAME);
+  const lastRow = sourceProdSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  // Read columns:
+  // Col 1 = Product Name
+  // Col 3 = Bottles Produced
+  const sourceValues = sourceProdSheet.getRange(2, 1, lastRow - 1, 3).getValues();
+
+  // Filter valid rows
+  const rowsToPush = sourceValues
+    .filter(r => r[0] && r[2])
+    .map(r => ({
+      batchId: batchId,
+      productName: r[0],
+      bottlesProduced: r[2]
+    }));
+
+  if (rowsToPush.length === 0) return;
+
+  // OPEN TARGET PRODUCT INVENTORY
+  const targetSs = SpreadsheetApp.openById(PRODUCT_INVENTORY_SPREADSHEET_ID);
+  const targetSheet = targetSs.getSheetByName(TARGET_PROD_ACTUALS_SHEET_NAME);
+
+  // Read existing rows to support UPSERT
+  const targetLast = targetSheet.getLastRow();
+  let existingData = [];
+  let indexMap = {};
+
+  if (targetLast >= 2) {
+    existingData = targetSheet.getRange(2, 1, targetLast - 1, 5).getValues();
+    existingData.forEach((row, i) => {
+      const key = `${row[0]}||${row[1]}`;
+      indexMap[key] = i + 2;  // convert to sheet row
+    });
+  }
+
+  function computeExpirationDate(productionDate) {
+    const d = new Date(productionDate);
+    d.setFullYear(d.getFullYear() + SHELF_LIFE_YEARS);
+    return d;
+  }
+
+  // Prepare new rows
+  const now = new Date();
+  const expirationDate = computeExpirationDate(now);
+  const rowsToAppend = [];
+
+  // UPSERT
+  rowsToPush.forEach(entry => {
+    const key = `${entry.batchId}||${entry.productName}`;
+    if (indexMap[key]) {
+      // Update bottles produced
+      targetSheet.getRange(indexMap[key], 3).setValue(entry.bottlesProduced);
+    } else {
+      // New row → append after
+      rowsToAppend.push([
+        entry.batchId,
+        entry.productName,
+        entry.bottlesProduced,
+        now,              // Date Produced
+        expirationDate    // Expiration Date = Date Produced + 2 years
+      ]);
+    }
+  });
+
+  // Append if needed
+  if (rowsToAppend.length > 0) {
+    targetSheet.getRange(targetSheet.getLastRow() + 1, 1, rowsToAppend.length, 5)
+      .setValues(rowsToAppend);
+  }
+}
