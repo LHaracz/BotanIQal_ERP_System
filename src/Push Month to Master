@@ -1,0 +1,87 @@
+/************ CONFIG ************/
+const MASTER_SHEET_ID = ''; // Put Sheet ID Here
+const MASTER_TAB_NAME = 'Monthly Summary';
+/********************************/
+
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('BotanIQ-Alls Tools')
+    .addItem('Update Fresh Yields (oz)', 'updateFreshYieldsFromMaster')
+    .addSeparator()
+    .addItem('Push Month to Master', 'pushMonthToMaster')
+    .addSeparator()
+    .addItem('Check Resources vs Inventory', 'checkResourcePlanAgainstInventory')
+    .addSeparator()
+    .addItem('Push Resource Usage to Inventory', 'pushResourceUsageToInventory')
+    .addSeparator()
+    .addItem('Update Resource Usage based on Actuals', 'applyPerProductPackagingVariance')
+    .addSeparator()
+    .addItem('Push Bottles Produced to Inventory','pushProductionActualsToProductInventory')
+    .addToUi();
+}
+
+
+function pushMonthToMaster() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const overview = ss.getSheetByName('Overview');
+  const products = ss.getSheetByName('Products (Demand)');
+  const fd = ss.getSheetByName('FD Planner');
+  
+  // === READ CORE CELLS (by fixed position) ===
+  const month = overview.getRange('B1').getValue();        // e.g. December
+  const batchId = overview.getRange('B3').getValue();      // e.g. 1225
+  const totalCost = overview.getRange('D1').getValue();    // Raw Materials Cost (adjust if different cell)
+  const totalRevenue = overview.getRange('D2').getValue(); // Revenue (adjust if different cell)
+  
+  const traysProduced = overview.getRange('H28').getValue();      // "Trays per machine per cycle"
+  const fdryerHours = fd.getRange('B19').getValue(); // cycle + defrost hours
+  const feasible = fd.getRange('A21').getValue() || "";    // your feasibility output cell
+  
+  // === READ PRODUCTS TABLE ===
+  const prodData = products.getRange('A2:F').getValues();  // raw table, no headers
+  const rows = [];
+  
+  for (let i = 0; i < prodData.length; i++) {
+    const row = prodData[i];
+    const product = row[0];          // Column A = Product
+    const units = row[4];            // Column E = Units to make
+    const totalPowder = row[5];      // Column F = Total Powder (g)
+    
+    if (!product) continue; // skip blanks
+    
+    rows.push([
+      month,
+      batchId,
+      product,
+      units || 0,
+      totalPowder || 0,
+      "", "", "", "", "" // placeholders for shared data
+    ]);
+  }
+
+  if (rows.length === 0) {
+    SpreadsheetApp.getUi().alert('No product rows found.');
+    return;
+  }
+
+  rows[0][5] = traysProduced || 0;
+  rows[0][6] = fdryerHours || 0;
+  rows[0][7] = feasible || '';
+  rows[0][8] = totalCost || 0;
+  rows[0][9] = totalRevenue || 0;
+
+  const master = SpreadsheetApp.openById(MASTER_SHEET_ID);
+  const target = master.getSheetByName(MASTER_TAB_NAME) || master.insertSheet(MASTER_TAB_NAME);
+
+  // Ensure header row
+  const headers = ['Month','Batch ID','Product','Units Produced','Total Powder (g)','Trays Produced','Fdryer Hours Used','Feasible?','Total Cost','Total Revenue'];
+  const existing = target.getRange(1,1,1,headers.length).getValues()[0];
+  if (existing.join('') === '' || existing[0] !== 'Month') {
+    target.getRange(1,1,1,headers.length).setValues([headers]);
+  }
+
+  const nextRow = target.getLastRow() + 1;
+  target.getRange(nextRow,1,rows.length,headers.length).setValues(rows);
+  
+  SpreadsheetApp.getUi().alert(`Pushed ${rows.length} product row(s) to Master for batch ${batchId}.`);
+}
