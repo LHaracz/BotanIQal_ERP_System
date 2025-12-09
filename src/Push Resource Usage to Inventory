@@ -1,0 +1,373 @@
+/************** CONFIG: **************/
+const CFG_INV = {
+  INVENTORY_SHEET_ID: '', //Put Sheet ID Here
+
+  // Inventory workbook tabs
+  TAB_INVENTORY: 'Resource Ledger',
+  TAB_USAGELOG: 'Resource Usage Log',
+
+  // Source tabs & cells in THIS monthly Production Log
+  TAB_USAGE: 'Resource Usage',   // A:D
+  TAB_OVERVIEW: 'Overview',
+  A1_BATCHID: 'B3',              // Overview!B3 = Batch ID
+
+  // Column indices (0-based) in Resource Usage (this file)
+  RU_RESOURCE_COL: 0,  // A: RESOURCE
+  RU_UNIT_COL: 1,      // B: UNIT
+  RU_QTY_COL: 2,       // C: QTY USED
+  RU_COSTUSED_COL: 3,  // D: COST USED
+  RU_ORDERMORE_COL: 4,  // E: ORDER MORE (in Resource Usage tab)
+
+  // Resource Ledger column indices (0-based) in Inventory workbook
+  INV_RESOURCE_COL: 0,      // A: Resource
+  INV_UNIT_COL: 1,          // B: Unit
+  INV_ONHAND_COL: 2,        // C: On Hand
+  INV_LASTCOUNTDATE_COL: 3, // D: Last Count Date
+  INV_NOTES_COL: 4,         // E: Notes
+
+  // Usage Log columns (exactly 5):
+  // [Batch ID, Resource, Unit, Qty Used, Cost Used]
+  UL_COLUMNS: 5
+};
+
+/**
+ * Push this month’s usage from:
+ *   Production Log → Resource Usage
+ * into:
+ *   Inventory → Resource Usage Log
+ *   and subtracts from Resource Ledger.On Hand.
+ *
+ * De-dupes by (BatchID, Resource) in Resource Usage Log.
+ */
+function pushResourceUsageToInventory() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActive();
+  const usageSh = ss.getSheetByName(CFG_INV.TAB_USAGE);
+  const overviewSh = ss.getSheetByName(CFG_INV.TAB_OVERVIEW);
+
+  if (!usageSh || !overviewSh) {
+    ui.alert('Missing tabs: ' + [CFG_INV.TAB_USAGE, CFG_INV.TAB_OVERVIEW].join(', '));
+    return;
+  }
+
+  const batchId = overviewSh.getRange(CFG_INV.A1_BATCHID).getValue();
+  if (!batchId) {
+    ui.alert('Batch ID not set at ' + CFG_INV.TAB_OVERVIEW + '!' + CFG_INV.A1_BATCHID);
+    return;
+  }
+
+  const usage = usageSh.getDataRange().getValues();
+  const grouped = {}; // key = resource (normalized) → {resource, unit, qty, cost}
+
+  for (let r = 0; r < usage.length; r++) {
+    const resource = s(usage[r][CFG_INV.RU_RESOURCE_COL]);
+    if (!resource || /^resource$/i.test(resource)) continue; // skip blanks/header row
+
+    const unit = s(usage[r][CFG_INV.RU_UNIT_COL]);
+    const qty = n(usage[r][CFG_INV.RU_QTY_COL]);
+    const costUsed = n(usage[r][CFG_INV.RU_COSTUSED_COL]);
+
+    if (qty <= 0) continue;
+
+    const k = key(resource);
+    if (!grouped[k]) grouped[k] = { resource, unit, qty: 0, cost: 0 };
+    grouped[k].qty += qty;
+    grouped[k].cost += costUsed;
+  }
+
+  if (Object.keys(grouped).length === 0) {
+    ui.alert('No usage lines found in Resource Usage.');
+    return;
+  }
+
+  const invSS = SpreadsheetApp.openById(CFG_INV.INVENTORY_SHEET_ID);
+  const invSh = invSS.getSheetByName(CFG_INV.TAB_INVENTORY) || invSS.insertSheet(CFG_INV.TAB_INVENTORY);
+  const logSh = invSS.getSheetByName(CFG_INV.TAB_USAGELOG) || invSS.insertSheet(CFG_INV.TAB_USAGELOG);
+
+  // Build inventory index by Resource (normalized name → row index)
+  const invRange = invSh.getDataRange();
+  const invVals = invRange.getValues();
+  const invIdx = {};
+  for (let r = 0; r < invVals.length; r++) {
+    const name = s(invVals[r][CFG_INV.INV_RESOURCE_COL]);
+    if (!name || /^resource$/i.test(name)) continue;
+    invIdx[key(name)] = r;
+  }
+
+  // Read existing Usage Log to build dedup set: (BatchID, Resource)
+  const logRange = logSh.getDataRange();
+  const logVals = logRange.getValues();
+  const seen = new Set();
+  for (let r = 0; r < logVals.length; r++) {
+    const b = s(logVals[r][0]);  // col A: Batch ID
+    const res = s(logVals[r][1]); // col B: Resource
+    if (b && res) seen.add(`${b}::${key(res)}`);
+  }
+
+  const toAppend = [];
+  let updated = 0, skippedDup = 0, missing = 0;
+
+  Object.values(grouped).forEach(g => {
+    const k = key(g.resource);
+    const dedupKey = `${batchId}::${k}`;
+    if (seen.has(dedupKey)) {
+      skippedDup++;
+      return;
+    }
+
+    // Append to Resource Usage Log:
+    // [Batch ID, Resource, Unit, Qty Used, Cost Used]
+    toAppend.push([
+      batchId,
+      g.resource,
+      g.unit,
+      g.qty,
+      g.cost
+    ]);
+
+    // Subtract from Resource Ledger.On Hand
+    if (invIdx[k] == null) {
+      const newRow = invSh.getLastRow() + 1;
+      invSh.getRange(newRow, CFG_INV.INV_RESOURCE_COL + 1).setValue(g.resource);
+      invSh.getRange(newRow, CFG_INV.INV_UNIT_COL + 1).setValue(g.unit || '');
+      invSh.getRange(newRow, CFG_INV.INV_ONHAND_COL + 1).setValue(0 - g.qty);
+      invSh.getRange(newRow, CFG_INV.INV_LASTCOUNTDATE_COL + 1).setValue('');
+      invIdx[k] = newRow - 1;
+      updated++;
+    } else {
+      const row = invIdx[k];
+      const currentOnHand = n(invVals[row][CFG_INV.INV_ONHAND_COL]);
+      invVals[row][CFG_INV.INV_ONHAND_COL] = currentOnHand - g.qty;
+      updated++;
+    }
+  });
+
+  if (updated > 0) {
+    invRange.setValues(invVals);
+  }
+
+  // Append to Resource Usage Log
+  if (toAppend.length > 0) {
+    const startRow = logSh.getLastRow() + 1;
+    logSh.getRange(startRow, 1, toAppend.length, CFG_INV.UL_COLUMNS).setValues(toAppend);
+  }
+
+  ui.alert(
+    `Resource usage push complete.\n` +
+    `Inventory lines updated: ${updated}\n` +
+    `Log rows appended: ${toAppend.length}\n` +
+    `Skipped duplicates (already logged for this batch): ${skippedDup}`
+  );
+}
+
+function s(v) {
+  return (v == null ? '' : String(v)).trim();
+}
+function key(s1) {
+  return s1.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+function n(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  const num = Number(String(v).replace(/,/g, '').trim());
+  return isFinite(num) ? num : 0;
+}
+
+function checkResourcePlanAgainstInventory() {
+  const ui = SpreadsheetApp.getUi();
+
+  const ss = SpreadsheetApp.getActive();
+  const usageSh = ss.getSheetByName(CFG_INV.TAB_USAGE);
+  if (!usageSh) {
+    ui.alert('Resource Usage tab not found: ' + CFG_INV.TAB_USAGE);
+    return;
+  }
+
+  const invSS = SpreadsheetApp.openById(CFG_INV.INVENTORY_SHEET_ID);
+  const invSh = invSS.getSheetByName(CFG_INV.TAB_INVENTORY);
+  if (!invSh) {
+    ui.alert('Resource Ledger tab not found in inventory workbook.');
+    return;
+  }
+
+  // Build inventory lookup: resource → on hand
+  const invVals = invSh.getDataRange().getValues();
+  const invMap = {};
+  for (let r = 0; r < invVals.length; r++) {
+    const name = s(invVals[r][CFG_INV.INV_RESOURCE_COL]);
+    if (!name || /^resource$/i.test(name)) continue;
+    invMap[key(name)] = n(invVals[r][CFG_INV.INV_ONHAND_COL]);
+  }
+
+  const lastRow = usageSh.getLastRow();
+  const orderMoreValues = []; 
+  let shortages = 0;
+
+  // Start from row 2 → skip header row
+  for (let r = 2; r <= lastRow; r++) {
+    const res = s(usageSh.getRange(r, CFG_INV.RU_RESOURCE_COL + 1).getValue());
+    const qtyUsed = n(usageSh.getRange(r, CFG_INV.RU_QTY_COL + 1).getValue());
+    const unit = s(usageSh.getRange(r, CFG_INV.RU_UNIT_COL + 1).getValue());
+
+    // If blank or header-like, leave ORDER MORE empty
+    if (!res || /^resource$/i.test(res)) {
+      orderMoreValues.push(['']);
+      continue;
+    }
+
+    if (qtyUsed <= 0) {
+      orderMoreValues.push(['']);
+      continue;
+    }
+
+    const onHand = invMap[key(res)] ?? 0;
+    const diff = qtyUsed - onHand;
+
+    if (diff <= 0) {
+      orderMoreValues.push(['No']);
+    } else {
+      shortages++;
+      const text = unit ? `Order ${diff} ${unit}` : `Order ${diff}`;
+      orderMoreValues.push([text]);
+    }
+  }
+
+  // Write ONLY into column E, starting row 2
+  usageSh
+    .getRange(2, CFG_INV.RU_ORDERMORE_COL + 1, lastRow - 1, 1)
+    .setValues(orderMoreValues);
+  
+  applyOrderMoreFormatting_(usageSh);
+
+  ui.alert(
+    shortages === 0
+      ? 'All planned resource usage is supported by inventory.'
+      : `${shortages} resource(s) require ordering. Check ORDER MORE column.`
+  );
+}
+function applyOrderMoreFormatting_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return; // nothing to format yet
+
+  const col = CFG_INV.RU_ORDERMORE_COL + 1; // ORDER MORE column index (E)
+  const startRow = 2;                        // skip header row
+  const numRows = lastRow - 1;
+  const range = sheet.getRange(startRow, col, numRows, 1);
+
+  // Get existing rules (we'll just append ours)
+  const rules = sheet.getConditionalFormatRules();
+
+  // Rule 1: cells starting with "Order" → red-ish
+  const orderRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextStartsWith('Order')
+    .setBackground('#ffcdd2') // light red
+    .setFontColor('#b71c1c')  // dark red text
+    .setRanges([range])
+    .build();
+
+  // Rule 2: cells equal to "No" → green-ish
+  const okRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('No')
+    .setBackground('#c8e6c9') // light green
+    .setFontColor('#1b5e20')  // dark green text
+    .setRanges([range])
+    .build();
+
+  // Append our rules (keeps any existing others)
+  rules.push(orderRule, okRule);
+  sheet.setConditionalFormatRules(rules);
+}
+function applyPerProductPackagingVariance() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActive();
+  const actualsSh = ss.getSheetByName("Production Actuals");
+  if (!actualsSh) {
+    ui.alert("Production Actuals tab not found.");
+    return;
+  }
+
+  const lastRow = actualsSh.getLastRow();
+  if (lastRow <= 1) {
+    ui.alert("No data rows found in Production Actuals.");
+    return;
+  }
+
+  // Columns (1-based) in Production Actuals:
+  const COL_VARIANCE_BOTTLES = 4; // D: VARIANCE BOTTLES
+  const COL_VARIANCE_CAPS    = 8; // H: VARIANCE CAPS
+
+  // Get all variance values for bottles and capsules (rows 2..lastRow)
+  const numRows = lastRow - 1;
+  const bottleVarVals = actualsSh.getRange(2, COL_VARIANCE_BOTTLES, numRows, 1).getValues();
+  const capsVarVals    = actualsSh.getRange(2, COL_VARIANCE_CAPS,    numRows, 1).getValues();
+
+  let totalBottleVariance = 0;
+  let totalCapsVariance   = 0;
+
+  bottleVarVals.forEach(r => { totalBottleVariance += n(r[0]); });
+  capsVarVals.forEach(r   => { totalCapsVariance   += n(r[0]); });
+
+  // If everything is zero, nothing to do
+  if (totalBottleVariance === 0 && totalCapsVariance === 0) {
+    ui.alert("No bottle or capsule variance to apply.");
+    return;
+  }
+
+  // Open inventory ledger
+  const invSS = SpreadsheetApp.openById(CFG_INV.INVENTORY_SHEET_ID);
+  const invSh = invSS.getSheetByName(CFG_INV.TAB_INVENTORY);
+  if (!invSh) {
+    ui.alert("Resource Ledger tab not found in inventory workbook.");
+    return;
+  }
+
+  const invRange = invSh.getDataRange();
+  const invVals = invRange.getValues();
+
+  // Build lookup: resource name -> row index
+  const invIdx = {};
+  for (let r = 0; r < invVals.length; r++) {
+    const name = s(invVals[r][CFG_INV.INV_RESOURCE_COL]);
+    if (!name || /^resource$/i.test(name)) continue;
+    invIdx[key(name)] = r;
+  }
+
+  // Helper to adjust a single resource's On Hand
+  function adjustResource(resourceName, delta) {
+    if (delta === 0) return false;
+    const k = key(resourceName);
+    const row = invIdx[k];
+    if (row == null) {
+      ui.alert("Resource '" + resourceName + "' not found in Resource Ledger. Add it first.");
+      return false;
+    }
+    const current = n(invVals[row][CFG_INV.INV_ONHAND_COL]);
+    invVals[row][CFG_INV.INV_ONHAND_COL] = current + delta;
+    return true;
+  }
+
+  let updates = 0;
+
+  // Apply bottles variance to: Bottles, Labels, Lids, Shrink Seals, Seals
+  if (totalBottleVariance !== 0) {
+    const resourcesForBottles = ["Bottles", "Labels", "Lids", "Shrink Seals", "Seals"];
+    resourcesForBottles.forEach(resName => {
+      if (adjustResource(resName, totalBottleVariance)) updates++;
+    });
+  }
+
+  // Apply capsules variance to: Capsules
+  if (totalCapsVariance !== 0) {
+    if (adjustResource("Capsules", totalCapsVariance)) updates++;
+  }
+
+  if (updates > 0) {
+    invRange.setValues(invVals);
+  }
+
+  ui.alert(
+    "Packaging variance applied.\n" +
+    "Total Bottles variance: " + totalBottleVariance + "\n" +
+    "Total Capsules variance: " + totalCapsVariance + "\n" +
+    "Inventory rows updated: " + updates
+  );
+}
