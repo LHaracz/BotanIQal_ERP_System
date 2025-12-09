@@ -1,0 +1,71 @@
+function autoApplyCycleCount(e) {
+  // Open this spreadsheet (inventory)
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const responsesSh = ss.getSheetByName('Cycle Count (Responses)');
+  const ledgerSh = ss.getSheetByName('Resource Ledger');
+  if (!responsesSh || !ledgerSh) return;
+
+  // Get the row that was just submitted
+  const row = e.range.getRow();
+  const values = responsesSh.getRange(row, 1, 1, responsesSh.getLastColumn()).getValues()[0];
+
+  // Expected columns:
+  // A = Timestamp
+  // B = Resource
+  // C = Counted Qty
+  // D = Unit
+  // E = Notes (optional)
+
+  const ts = values[0];
+  const resource = safeStr(values[1]);
+  const qty = safeNum(values[2]);
+  const unit = safeStr(values[3]);
+
+  if (!resource || !isFinite(qty)) {
+    // Skip invalid rows
+    return;
+  }
+
+  // Normalize key
+  const key = resource.toLowerCase().trim().replace(/\s+/g, ' ');
+
+  // Read resource ledger
+  const ledRange = ledgerSh.getDataRange();
+  const ledVals = ledRange.getValues();
+  let found = false;
+
+  for (let r = 0; r < ledVals.length; r++) {
+    const name = safeStr(ledVals[r][0]).toLowerCase().trim().replace(/\s+/g, ' ');
+    if (name === key) {
+      // Update on-hand & last count date
+      ledVals[r][2] = qty;      // On Hand
+      ledVals[r][3] = ts;       // Last Count Date
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    // Create a new line in Resource Ledger for this item
+    const newRow = ledgerSh.getLastRow() + 1;
+    ledgerSh.getRange(newRow, 1).setValue(resource); // Resource
+    ledgerSh.getRange(newRow, 2).setValue(unit);     // Unit
+    ledgerSh.getRange(newRow, 3).setValue(qty);      // On Hand
+    ledgerSh.getRange(newRow, 4).setValue(ts);       // Last Count Date
+  } else {
+    // Write updates back to ledger
+    ledRange.setValues(ledVals);
+  }
+}
+
+function safeStr(v) {
+  return (v == null ? '' : String(v)).trim();
+}
+
+function safeNum(v) {
+  if (typeof v === 'number') return v;
+  const n = Number(String(v).replace(/,/g, '').trim());
+  return isFinite(n) ? n : null;
+}
+
