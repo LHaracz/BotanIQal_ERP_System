@@ -1,0 +1,99 @@
+/************ CONFIG: ************/
+const CFG = {
+  // The master Harvest Yield spreadsheet (the form's response summary)
+  MASTER_YIELD_SHEET_ID: '1r5ceFQQRcQgGYSp_f-B5r3bsxZisOWLDRV4xlHi2rj8',
+  MASTER_YIELD_TAB: 'Yield Summary',
+
+  INPUT_GUIDE_TAB: 'Input Guide',
+
+  YIELD_KEY_COL: 0,
+  YIELD_AVG_COL: 3,
+
+  INPUT_NAME_COL: 0,
+  OUTPUT_YIELD_COL: 2,
+
+  // Rounding for display
+  DECIMALS: 3
+};
+
+function updateFreshYieldsFromMaster() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    // Open master yield sheet & read all rows
+    const master = SpreadsheetApp.openById(CFG.MASTER_YIELD_SHEET_ID);
+    const ySheet = master.getSheetByName(CFG.MASTER_YIELD_TAB);
+    if (!ySheet) throw new Error('Master yield tab not found: ' + CFG.MASTER_YIELD_TAB);
+
+    const yValues = ySheet.getDataRange().getValues(); // raw, no header assumptions
+    // Build a lookup map: name -> avgYield
+    const yieldMap = {};
+    for (let r = 0; r < yValues.length; r++) {
+      const nameRaw = safeStr(yValues[r][CFG.YIELD_KEY_COL]);
+      const avgRaw = yValues[r][CFG.YIELD_AVG_COL];
+
+      // Skip empty names and typical header row if present
+      if (!nameRaw || /^microgreen$/i.test(nameRaw)) continue;
+
+      const avgNum = toNum(avgRaw);
+      if (avgNum == null || !isFinite(avgNum)) {
+        // non-numeric -> skip
+        continue;
+      }
+      yieldMap[normalizeKey(nameRaw)] = avgNum;
+    }
+
+    // Open this file's Input Guide and update Fresh Yield (oz)
+    const ss = SpreadsheetApp.getActive();
+    const inSheet = ss.getSheetByName(CFG.INPUT_GUIDE_TAB);
+    if (!inSheet) throw new Error('Production log tab not found: ' + CFG.INPUT_GUIDE_TAB);
+
+    const range = inSheet.getDataRange();
+    const rows = range.getValues();
+    let updated = 0, skipped = 0;
+
+    for (let r = 0; r < rows.length; r++) {
+      const name = safeStr(rows[r][CFG.INPUT_NAME_COL]);
+      if (!name || /^input$/i.test(name)) continue; // skip blank or header-like
+
+      const key = normalizeKey(name);
+      const avg = yieldMap[key];
+
+      if (avg == null) {
+        skipped++;
+        continue; // no matching yield found
+      }
+
+      // Round and set
+      rows[r][CFG.OUTPUT_YIELD_COL] = roundTo(avg, CFG.DECIMALS);
+      updated++;
+    }
+
+    range.setValues(rows);
+
+    ui.alert(`Fresh yields updated.\nUpdated rows: ${updated}\nNo match / non-numeric skipped: ${skipped}`);
+  } catch (err) {
+    ui.alert('Error: ' + err.message);
+  }
+}
+
+function safeStr(v) {
+  if (v === null || v === undefined) return '';
+  return String(v).trim();
+}
+function normalizeKey(s) {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+function toNum(v) {
+  // Accept numbers or numeric strings; reject errors (#DIV/0!), empty, text
+  if (typeof v === 'number') return v;
+  const s = safeStr(v);
+  if (!s) return null;
+  // guard common error strings
+  if (/^#(div\/0!|na|value!|ref!|name\!|null!)$/i.test(s)) return null;
+  const n = Number(s.replace(/[,]/g, ''));
+  return isFinite(n) ? n : null;
+}
+function roundTo(n, d) {
+  const p = Math.pow(10, d);
+  return Math.round((n + Number.EPSILON) * p) / p;
+}
