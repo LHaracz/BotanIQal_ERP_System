@@ -1,0 +1,171 @@
+function sendBotanIQProductionAlerts() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Tray Production Schedule"); // adjust if needed
+
+  if (!sheet) {
+    throw new Error("Tray Production Schedule sheet not found");
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 27) return; // no run rows yet
+
+  // Read MICROGREEN, RUN #, TRAYS THIS RUN, SOWING DATE, HARVEST DATE
+  const dataRange = sheet.getRange(26, 1, lastRow - 25, 5); // A26:E
+  const data = dataRange.getValues();
+
+  // Normalize "today" to midnight
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // Buckets
+  const soakToday = [];
+  const drainToday = [];
+  const sowToday = [];
+  const lightToday = [];
+  const harvestToday = [];
+
+  // Same soaking logic as MiniLeaf
+  const soakingRequired = [
+    "beet", "cantaloupe", "cilantro", "pea",
+    "popcorn", "radish", "sunflower", "wheatgrass"
+  ];
+
+  const tz = Session.getScriptTimeZone();
+
+  // Helpers
+  const addDays = (d, n) => {
+    const x = new Date(d);
+    x.setDate(x.getDate() + n);
+    x.setHours(0, 0, 0, 0);
+    return x;
+  };
+  const sameDay = (d1, d2) => d1 && d2 && d1.getTime() === d2.getTime();
+
+  // Loop through all runs
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const microgreen = row[0];       // A: MICROGREEN
+    const runNum = row[1];           // B: RUN #
+    const traysThisRun = Number(row[2]); // C: TRAYS THIS RUN
+    const sowDateRaw = row[3];       // D: SOWING DATE
+    const harvestDateRaw = row[4];   // E: HARVEST DATE
+
+    if (!microgreen || !traysThisRun || !sowDateRaw) continue;
+
+    const name = String(microgreen).toLowerCase().trim();
+
+    const sowDate = new Date(sowDateRaw);
+    sowDate.setHours(0, 0, 0, 0);
+
+    let harvestDate = null;
+    if (harvestDateRaw && !isNaN(new Date(harvestDateRaw))) {
+      harvestDate = new Date(harvestDateRaw);
+      harvestDate.setHours(0, 0, 0, 0);
+    }
+
+    // Germination days (same mapping as MiniLeaf)
+    let germinationDays;
+    switch (name) {
+      case "arugula":
+      case "amaranth":
+      case "buckwheat":
+      case "broccoli":
+      case "cabbage":
+      case "kale":
+      case "mustard":
+      case "radish":
+      case "wheatgrass":
+        germinationDays = 4; break;
+      case "sunflower":
+        germinationDays = 5; break;
+      case "beet":
+      case "pea":
+      case "popcorn":
+        germinationDays = 6; break;
+      case "cantaloupe":
+      case "cilantro":
+      case "strawberry":
+        germinationDays = 8; break;
+      case "basil":
+        germinationDays = 11; break;
+      default:
+        germinationDays = 4;
+    }
+
+    const isSoakCrop = soakingRequired.includes(name);
+    let soakDate = null;
+    let drainDate = null;
+    let lightDate = null;
+
+    if (isSoakCrop) {
+      // For BotanIQ schedule, we have sowDate per run
+      // Soak the day BEFORE sowing, drain on sow day
+      soakDate = addDays(sowDate, -1);
+      drainDate = sowDate;
+      lightDate = addDays(sowDate, germinationDays);
+
+      if (sameDay(soakDate, today)) {
+        soakToday.push(`${microgreen} – Run #${runNum} (${traysThisRun} trays)`);
+      }
+      if (sameDay(drainDate, today)) {
+        drainToday.push(`${microgreen} – Run #${runNum} (${traysThisRun} trays)`);
+        // you drain and sow same day
+        sowToday.push(`${microgreen} – Run #${runNum} (${traysThisRun} trays)`);
+      }
+    } else {
+      // Non-soak crops: sow on sowDate
+      lightDate = addDays(sowDate, germinationDays);
+
+      if (sameDay(sowDate, today)) {
+        sowToday.push(`${microgreen} – Run #${runNum} (${traysThisRun} trays)`);
+      }
+    }
+
+    if (sameDay(lightDate, today)) {
+      lightToday.push(`${microgreen} – Run #${runNum} (${traysThisRun} trays)`);
+    }
+
+    if (harvestDate && sameDay(harvestDate, today)) {
+      harvestToday.push(`${microgreen} – Run #${runNum} (${traysThisRun} trays)`);
+    }
+  }
+
+  // If literally nothing to say, exit quietly
+  if (
+    !soakToday.length &&
+    !drainToday.length &&
+    !sowToday.length &&
+    !lightToday.length &&
+    !harvestToday.length
+  ) return;
+
+  const dateStamp = Utilities.formatDate(today, tz, 'yyyy-MM-dd');
+  const subject = `BotanIQals Production – ${dateStamp}`;
+
+  // TODO: update to your real BotanIQ email(s)
+  const email = "lukasharacz524@gmail.com,morrowethan12@gmail.com,shanegirtain@gmail.com";
+
+  let message = "Here’s your BotanIQ production reminder for today:\n\n";
+
+  if (soakToday.length) {
+    message += "Soak These Seeds Today:\n" + soakToday.join("\n") + "\n\n";
+  }
+
+  if (drainToday.length) {
+    message += "Drain These Soaked Seeds Today:\n" + drainToday.join("\n") + "\n\n";
+  }
+
+  if (sowToday.length) {
+    message += "Sow These Trays Today:\n" + sowToday.join("\n") + "\n\n";
+  }
+
+  if (lightToday.length) {
+    message += "Move These Trays to Light Today:\n" + lightToday.join("\n") + "\n\n";
+  }
+
+  if (harvestToday.length) {
+    message += "Harvest These Trays Today:\n" + harvestToday.join("\n") + "\n\n";
+  }
+
+  MailApp.sendEmail(email, subject, message);
+}
