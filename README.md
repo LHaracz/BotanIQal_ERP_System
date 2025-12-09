@@ -15,7 +15,7 @@ It’s primarily here to showcase **how I designed and automated my own operatio
 
 ---
 
-## 🧱 Core Components
+## Core Components
 
 ### 1. Production Log (Monthly)
 
