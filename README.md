@@ -231,6 +231,16 @@ If you’re just browsing:
 2. Then read [`docs/data-flow.md`](docs/data-flow.md) – how data moves between sheets.
 3. Finally, skim the Apps Script files in `scripts/` to see how planning, inventory, and batch logs are automated.
 
+## How I Use This in the Real Business
+
+- Every month I duplicate the Production Log template and set the batch ID.
+- I use the **Products (Demand)** sheet to plan which SKUs to make.
+- I run `Check Resources vs Inventory` to see if the month is feasible with current stock.
+- Once production is finished, I:
+  - Push resource usage & variance updates into the **Resource Ledger**.
+  - Push production actuals into the **Product Inventory** with batch + expiration dates.
+- The **MASTER PRODUCTION SHEET** acts as the historical log for all batches and products.
+
 ---
 
 ## Notes / Limitations
