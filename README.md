@@ -15,6 +15,32 @@ It’s primarily here to showcase **how I designed and automated my own operatio
 
 ---
 
+## TL;DR
+
+This repo documents the spreadsheet-based ERP I use to run **BotanIQal**, my freeze-dried microgreen supplements business. It:
+
+- Plans monthly production based on demand, tray yields, and freeze dryer capacity
+- Checks feasibility against raw material & packaging inventory
+- Logs resource usage (planned vs actual) and applies cycle counts
+- Tracks finished product by batch with production + expiration dates
+
+---
+
+## Stack / Skills
+
+- **Google Sheets** as the primary data store
+- **Google Apps Script (JavaScript)** for:
+  - Custom menus and UX
+  - Cross-workbook data sync
+  - Inventory and feasibility checks
+  - Email alerts and production reminders
+- **Production & inventory modeling**:
+  - Freeze dryer capacity planning
+  - Resource usage aggregation and variance handling
+  - Batch ID–based traceability design
+
+  ---
+
 ## Core Components
 
 ### 1. Production Log (Monthly)
@@ -197,13 +223,13 @@ This schedule drives the **fresh microgreen inputs** that are then freeze-dried 
 
 ---
 
-## How the Pieces Fit Together
+## How to Explore This Repo
 
-See [`docs/overview.md`](docs/overview.md) and [`docs/data-flow.md`](docs/data-flow.md) for a deeper explanation of:
+If you’re just browsing:
 
-- How data moves from **tray yields → fresh yields → production log → inventory**
-- How batch traceability is enforced
-- How planned usage vs actual usage vs cycle counts all reconcile into one inventory picture
+1. Start with [`docs/overview.md`](docs/overview.md) – big picture of what the system does.
+2. Then read [`docs/data-flow.md`](docs/data-flow.md) – how data moves between sheets.
+3. Finally, skim the Apps Script files in `scripts/` to see how planning, inventory, and batch logs are automated.
 
 ---
 
